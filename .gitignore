@@ -1,0 +1,7 @@
+build/
+build-*/
+_trash/
+.DS_Store
+third_party/build/
+third_party/fftw-universal/
+release/
