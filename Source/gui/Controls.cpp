@@ -3,6 +3,8 @@
 
 #include <BinaryData.h>
 
+#include <limits>
+
 namespace dtgui
 {
 //==============================================================================
@@ -24,59 +26,70 @@ const Skin& Skin::get()
 }
 
 //==============================================================================
-// one popup slider: the original used two layered windows (background + knob) per slider; this
-// is one transparent, click-through desktop window drawing both
-class SliderPopupWindow : public juce::Component
+// both popup sliders (the original used two layered windows per slider, background + knob, in
+// screen coordinates). This is one transparent, click-through child of the editor's content, so
+// the bars and knobs move together, scale with the editor, stay inside it, and whatever they
+// covered is repainted when they move or close.
+class SliderPopupOverlay : public juce::Component
 {
 public:
-    SliderPopupWindow()
+    struct Bar
+    {
+        juce::Image bg, knob;
+        int bgI = 0, knobI = 0;
+        juce::Rectangle<int> bgR, knobR; // in the owning control's coordinates
+    };
+
+    SliderPopupOverlay()
     {
         setInterceptsMouseClicks(false, false);
         setOpaque(false);
+        setWantsKeyboardFocus(false);
     }
 
-    // rects in the owning control's coordinates (logical, unscaled)
-    void update(juce::Component& owner, const juce::Image& bg, int bgTile, juce::Rectangle<int> bgRect,
-                const juce::Image& knob, int knobTile, juce::Rectangle<int> knobRect)
+    // bars drawn with "control to host" transform t
+    void update(const Bar (&b)[2], juce::AffineTransform t)
     {
-        bgImg = bg;
-        knobImg = knob;
-        bgI = bgTile;
-        knobI = knobTile;
-        const auto area = bgRect.getUnion(knobRect);
-        bgR = bgRect - area.getPosition();
-        knobR = knobRect - area.getPosition();
-
-        const auto g1000 = owner.localAreaToGlobal(juce::Rectangle<int>(0, 0, 1000, 1000));
-        scale = (float) g1000.getWidth() / 1000.0f;
-        const auto topLeft = owner.localPointToGlobal(area.getPosition());
-        setBounds(topLeft.x, topLeft.y, juce::roundToInt((float) area.getWidth() * scale),
-                  juce::roundToInt((float) area.getHeight() * scale));
-
-        if (!isOnDesktop())
-        {
-            addToDesktop(juce::ComponentPeer::windowIsTemporary | juce::ComponentPeer::windowIgnoresMouseClicks
-                         | juce::ComponentPeer::windowIgnoresKeyPresses);
-            setAlwaysOnTop(true);
-            setVisible(true);
-        }
-        repaint();
+        const auto before = drawn;
+        for (int i = 0; i < 2; ++i)
+            bars[i] = b[i];
+        xf = t;
+        drawn = {};
+        for (auto& bar : bars)
+            drawn = drawn.getUnion(toHostRect(bar.bgR)).getUnion(toHostRect(bar.knobR));
+        everDrawn = everDrawn.getUnion(drawn);
+        repaint(before.getUnion(drawn));
     }
+
+    juce::Rectangle<int> toHostRect(juce::Rectangle<int> r) const
+    {
+        // one extra pixel all round for the resampling filter at fractional scales
+        return r.toFloat().transformedBy(xf).getSmallestIntegerContainer().expanded(1);
+    }
+    juce::Rectangle<int> barBounds(int i) const { return bars[i].bgR.toFloat().transformedBy(xf).getSmallestIntegerContainer(); }
+    juce::Rectangle<int> knobBounds(int i) const { return bars[i].knobR.toFloat().transformedBy(xf).getSmallestIntegerContainer(); }
+    juce::Rectangle<int> getEverDrawn() const { return everDrawn; }
 
     void paint(juce::Graphics& g) override
     {
-        g.addTransform(juce::AffineTransform::scale(scale));
-        const int th = bgImg.getHeight() / 2, kh = knobImg.getHeight() / 2;
-        g.drawImage(bgImg, bgR.getX(), bgR.getY(), bgR.getWidth(), bgR.getHeight(), 0, bgI * th, bgImg.getWidth(), th);
-        g.drawImage(knobImg, knobR.getX(), knobR.getY(), knobR.getWidth(), knobR.getHeight(), 0, knobI * kh,
-                    knobImg.getWidth(), kh);
+        g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
+        g.addTransform(xf);
+        for (auto& b : bars)
+        {
+            if (!b.bg.isValid() || !b.knob.isValid())
+                continue;
+            const int th = b.bg.getHeight() / 2, kh = b.knob.getHeight() / 2;
+            g.drawImage(b.bg, b.bgR.getX(), b.bgR.getY(), b.bgR.getWidth(), b.bgR.getHeight(), 0, b.bgI * th,
+                        b.bg.getWidth(), th);
+            g.drawImage(b.knob, b.knobR.getX(), b.knobR.getY(), b.knobR.getWidth(), b.knobR.getHeight(), 0,
+                        b.knobI * kh, b.knob.getWidth(), kh);
+        }
     }
 
 private:
-    juce::Image bgImg, knobImg;
-    int bgI = 0, knobI = 0;
-    juce::Rectangle<int> bgR, knobR;
-    float scale = 1.0f;
+    Bar bars[2];
+    juce::AffineTransform xf;
+    juce::Rectangle<int> drawn, everDrawn;
 };
 
 //==============================================================================
@@ -93,6 +106,25 @@ void PopupHSlider::Internal::shift(float v, float pixel)
     rescale.setOffs(v, pixel);
     const float leftVal = juce::jlimit(0.0f, 1.0f - 1.0f / magnify, v - 0.5f / magnify);
     bgRect.setX(RndToInt(getPixel(leftVal)));
+}
+
+void PopupHSlider::Internal::translate(int d, bool withMapping)
+{
+    bgRect.translate(d, 0);
+    if (withMapping)
+        rescale.setOffs(rescale.getLeft() + (float) d);
+}
+
+int PopupHSlider::Internal::fitDelta(int lo, int hi, int margin) const
+{
+    const int l = bgRect.getX() - margin, r = bgRect.getRight() + margin;
+    if (r - l > hi - lo)
+        return lo - l; // cannot fit: keep the left edge in
+    if (l < lo)
+        return lo - l;
+    if (r > hi)
+        return hi - r;
+    return 0;
 }
 
 float PopupHSlider::Internal::drag(int pixel)
@@ -195,24 +227,94 @@ void PopupHSlider::mouseDown(const juce::MouseEvent& e)
         afterMouse(e.mods);
 }
 
+namespace
+{
+constexpr int IMAGE_BORDER = 2; // 2 pixel border around the popup images (sliderMouseClick)
+}
+
+juce::Component* PopupHSlider::findPopupHost()
+{
+    for (auto* p = getParentComponent(); p != nullptr; p = p->getParentComponent())
+        if ((bool) p->getProperties()[popupHostProperty])
+            return p;
+    return getParentComponent() != nullptr ? getTopLevelComponent() : nullptr;
+}
+
+juce::AffineTransform PopupHSlider::toHost() const
+{
+    auto* host = overlayHost.getComponent();
+    if (host == nullptr)
+        return {};
+    const auto o = host->getLocalPoint(this, juce::Point<float>());
+    const auto x = host->getLocalPoint(this, juce::Point<float>(1000.0f, 0.0f));
+    return juce::AffineTransform::scale((x.x - o.x) / 1000.0f).translated(o);
+}
+
+void PopupHSlider::fitInside(int i, bool withMapping)
+{
+    const int margin = Skin::get().hsKnob[i].getWidth() / 2; // a knob at either end stays inside too
+    const int d = slider[i].fitDelta(area.getX(), area.getRight(), margin);
+    if (d != 0)
+        slider[i].translate(d, withMapping);
+}
+
 void PopupHSlider::sliderMouseClick(const juce::MouseEvent& e)
 {
     if (state >= MENU_OPEN)
         return;
     setState(PRE_DRAG);
 
+    closePopups();
+    auto* host = findPopupHost();
+    overlayHost = host;
+    area = host != nullptr ? getLocalArea(host, host->getLocalBounds())
+                           : juce::Rectangle<int>(-100000, -100000, 200000, 200000);
+
     const auto& skin = Skin::get();
-    constexpr int IMAGE_BORDER = 2;
     int y[2];
     y[FINE] = 0 - skin.hsBg[FINE].getHeight() / 2 + IMAGE_BORDER;
     y[COARSE] = getHeight() - IMAGE_BORDER;
     const float magnify[2] = { 1.0f, 1.0f / fineScaleFrac };
 
     for (int i = 0; i < 2; ++i)
-    {
         slider[i].create(y[i], skin.hsBg[i].getWidth() - IMAGE_BORDER * 2,
                          skin.hsBg[i].getHeight() / 2 - IMAGE_BORDER * 2, magnify[i]);
+
+    // fine above, coarse below, as the original. Where one does not fit inside the editor (top and
+    // bottom rows) it goes on the far side of the other one, so neither covers the clicked value
+    {
+        auto& f = slider[FINE].bgRect;
+        auto& c = slider[COARSE].bgRect;
+        const int B = IMAGE_BORDER;
+        const bool fineFits = f.getY() - B >= area.getY();
+        const bool coarseFits = c.getBottom() + B <= area.getBottom();
+        if (!fineFits && coarseFits)
+            f.setY(c.getBottom() + 2 * B); // top row: cell, coarse, fine
+        else if (fineFits && !coarseFits)
+            c.setY(f.getY() - 2 * B - c.getHeight()); // bottom row: coarse, fine, cell
+        for (auto* r : { &f, &c }) // last resort for an editor smaller than the bars
+            r->setY(juce::jlimit(area.getY() + B, juce::jmax(area.getY() + B, area.getBottom() - B - r->getHeight()), r->getY()));
+    }
+
+    // the original put the current value under the mouse on both bars. Keep that when it fits,
+    // otherwise slide both bars by the smallest amount that keeps them inside, and map the mouse
+    // with the same offset
+    for (int i = 0; i < 2; ++i)
         slider[i].shift(value, (float) e.x);
+    int dLo = std::numeric_limits<int>::min(), dHi = std::numeric_limits<int>::max();
+    for (int i = 0; i < 2; ++i)
+    {
+        const int m = skin.hsKnob[i].getWidth() / 2;
+        dLo = juce::jmax(dLo, area.getX() + m - slider[i].bgRect.getX());
+        dHi = juce::jmin(dHi, area.getRight() - m - slider[i].bgRect.getRight());
+    }
+    xOffs = dLo <= dHi ? juce::jlimit(dLo, dHi, 0) : 0;
+    for (int i = 0; i < 2; ++i)
+        slider[i].shift(value, (float) (e.x + xOffs));
+    if (dLo > dHi) // editor narrower than both bars allow (never at the normal size)
+    {
+        fitInside(COARSE, true);
+        fitInside(FINE, false);
     }
     updatePopups();
 }
@@ -247,13 +349,32 @@ void PopupHSlider::mouseDrag(const juce::MouseEvent& e)
     }
     else if (state >= COARSE)
     {
+        int vx = e.x + xOffs; // mouse x on the bars' scale
         auto newState = state;
         for (int i = 0; i < 2; ++i)
-            if (slider[i].bgRect.contains(e.getPosition()))
+            if (slider[i].bgRect.contains(vx, e.y))
                 newState = (State) i;
-        state = newState;
+        if (newState != state)
+        {
+            // the other bar's knob is normally lined up with this one; if it was slid to stay
+            // inside, carry on from its knob so the value does not jump
+            const int dk = RndToInt(slider[(int) newState].getPixel(value)) - RndToInt(slider[(int) state].getPixel(value));
+            xOffs += dk;
+            vx += dk;
+            state = newState;
+        }
 
-        float v = slider[(int) state].drag(e.x);
+        float v = slider[(int) state].drag(vx);
+        {
+            // a bar dragged along past the editor edge stays at the edge; the scale moves under it
+            const int d = slider[(int) state].fitDelta(area.getX(), area.getRight(),
+                                                       Skin::get().hsKnob[(int) state].getWidth() / 2);
+            if (d != 0)
+            {
+                slider[(int) state].translate(d, true);
+                xOffs += d;
+            }
+        }
         if (snapToMenu)
         {
             const int idx = findClosestMenuIdx(v);
@@ -356,9 +477,13 @@ void PopupHSlider::updatePopups()
     {
         const int other = state == COARSE ? FINE : COARSE;
         slider[other].shift(v, slider[(int) state].getPixel(v));
+        // keep it inside: the fine bar is a window on a scale 15 bars long, so only the bar moves
+        // and the knobs stay lined up; the coarse bar is the whole 0..1 scale, so it moves with it
+        fitInside(other, other == COARSE);
     }
 
     const auto& skin = Skin::get();
+    SliderPopupOverlay::Bar bars[2];
     for (int i = 0; i < 2; ++i)
     {
         const int idx = state == (State) i ? 1 : 0;
@@ -366,24 +491,45 @@ void PopupHSlider::updatePopups()
         const auto& knob = skin.hsKnob[i];
         const auto bgCent = slider[i].bgRect.getCentre();
         const juce::Rectangle<int> bgTile(0, 0, bg.getWidth(), bg.getHeight() / 2);
-        const auto bgR = bgTile.withCentre(bgCent);
-        const int knobX = RndToInt(slider[i].getPixel(v));
+        // a snapped value can sit far off the fine bar (the original drew its knob there anyway);
+        // keep the knob on its bar
+        const int knobX = juce::jlimit(slider[i].bgRect.getX(), slider[i].bgRect.getRight() - 1,
+                                       RndToInt(slider[i].getPixel(v)));
         const juce::Rectangle<int> knobTile(0, 0, knob.getWidth(), knob.getHeight() / 2);
-        const auto knobR = knobTile.withCentre({ knobX, bgCent.y });
-
-        if (headlessPopups)
-            continue;
-        if (popup[i] == nullptr)
-            popup[i] = std::make_unique<SliderPopupWindow>();
-        popup[i]->update(*this, bg, idx, bgR, knob, idx, knobR);
+        bars[i] = { bg, knob, idx, idx, bgTile.withCentre(bgCent), knobTile.withCentre({ knobX, bgCent.y }) };
     }
+
+    auto* host = overlayHost.getComponent();
+    if (host == nullptr)
+        return;
+    if (overlay == nullptr)
+    {
+        overlay = std::make_unique<SliderPopupOverlay>();
+        overlay->setBounds(host->getLocalBounds());
+        host->addAndMakeVisible(*overlay); // last child = drawn over everything else
+    }
+    overlay->update(bars, toHost());
 }
 
 void PopupHSlider::closePopups()
 {
-    for (auto& p : popup)
-        p.reset();
+    if (overlay != nullptr)
+    {
+        // repaint everything the popups ever covered, so nothing is left behind
+        lastCloseRepaint = overlay->getEverDrawn();
+        if (auto* host = overlayHost.getComponent())
+        {
+            host->removeChildComponent(overlay.get());
+            host->repaint(lastCloseRepaint);
+        }
+        overlay.reset();
+    }
+    xOffs = 0;
 }
+
+juce::Rectangle<int> PopupHSlider::getPopupBarBounds(int i) const { return overlay ? overlay->barBounds(i) : juce::Rectangle<int>(); }
+juce::Rectangle<int> PopupHSlider::getPopupKnobBounds(int i) const { return overlay ? overlay->knobBounds(i) : juce::Rectangle<int>(); }
+juce::Rectangle<int> PopupHSlider::getPopupDrawnArea() const { return overlay ? overlay->getEverDrawn() : juce::Rectangle<int>(); }
 
 //==============================================================================
 void OwnerToggle::setBoolValue(bool v, bool sendToListener)

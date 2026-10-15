@@ -11,6 +11,10 @@ DtBlkFxHarness: offline test bench for the DtBlkFx JUCE port (no DAW needed).
       save state, change everything, restore, and check that every parameter came back
   DtBlkFxHarness ui
       simulate mouse drags/clicks on the rebuilt editor and check the parameters they set
+  DtBlkFxHarness popup <dir>
+      open the Fine / Coarse popup sliders on cells in every corner of the editor at 1x, 1.5x and
+      2x, check they sit inside the editor and line up with the cell, drag them past the edges,
+      check nothing is left behind after closing, and write snapshots to <dir>/popup-*.png
   DtBlkFxHarness preset-load <file.fxp|file.fxb> [--drop]
       load a VST2 preset or bank into a fresh plug-in (with --drop: by dropping it on the editor)
       and print the result, current program, every parameter and every program name
@@ -35,6 +39,7 @@ options:
 #include "FxRun1_0.h"
 
 #include "../Source/gui/Controls.h"
+#include "../Source/gui/Skin.h"
 
 #include <cmath>
 #include <iostream>
@@ -392,7 +397,6 @@ struct Mouse
 
 int cmdUi()
 {
-    dtgui::PopupHSlider::headlessPopups = true;
     DtBlkFxProcessor p;
     p.setCurrentProgram(1); // "4 band para"
     std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
@@ -486,6 +490,220 @@ int cmdUi()
     std::cout << (fails == 0 ? "UI OK" : "UI FAILURES") << "\n";
     return fails == 0 ? 0 : 4;
 }
+
+// --- popup sliders -------------------------------------------------------------------------------
+juce::Image snap(juce::Component& ed)
+{
+    return ed.createComponentSnapshot(ed.getLocalBounds(), true, 1.0f);
+}
+
+bool writePng(const juce::Image& img, const juce::File& f)
+{
+    f.deleteFile();
+    juce::FileOutputStream os(f);
+    juce::PNGImageFormat png;
+    return os.openedOk() && png.writeImageToStream(img, os);
+}
+
+int countDiff(const juce::Image& a, const juce::Image& b)
+{
+    if (a.getWidth() != b.getWidth() || a.getHeight() != b.getHeight())
+        return -1;
+    const juce::Image::BitmapData da(a, juce::Image::BitmapData::readOnly), db(b, juce::Image::BitmapData::readOnly);
+    int n = 0;
+    for (int y = 0; y < a.getHeight(); ++y)
+        for (int x = 0; x < a.getWidth(); ++x)
+            if (da.getPixelColour(x, y) != db.getPixelColour(x, y))
+                ++n;
+    return n;
+}
+
+int cmdPopup(const juce::StringArray& args)
+{
+    const auto dir = juce::File::getCurrentWorkingDirectory().getChildFile(args.size() > 1 ? args[1] : "docs");
+    dir.createDirectory();
+    int fails = 0;
+    auto check = [&](const juce::String& what, bool ok) {
+        if (!ok)
+        {
+            std::cout << "  FAIL " << what << "\n";
+            ++fails;
+        }
+        return ok;
+    };
+    auto idle = [] { juce::MessageManager::getInstance()->runDispatchLoopUntil(60); };
+
+    struct Case
+    {
+        const char* name;
+        int row;   // -1 = global strip, 0..7 = effect rows
+        int child; // control index in that row
+    };
+    const Case cases[] = { { "top-first", -1, 0 },   { "top-last", -1, 5 },  { "row1-first", 0, 0 },
+                           { "row1-last", 0, 4 },    { "row4-amp", 3, 2 },   { "row8-first", 7, 0 },
+                           { "row8-last", 7, 4 } };
+    const float scales[] = { 1.0f, 1.5f, 2.0f };
+
+    for (float scale : scales)
+    {
+        DtBlkFxProcessor p;
+        p.setCurrentProgram(1); // "4 band para"
+        // values that push the bars off the edges: high on the left, low on the right
+        p.param(4)->setValueNotifyingHost(0.95f);  // slot 0 FreqA (first column)
+        p.param(8)->setValueNotifyingHost(0.02f);  // slot 0 Val (last column)
+        p.param(39)->setValueNotifyingHost(0.98f); // slot 7 FreqA
+        p.param(43)->setValueNotifyingHost(0.03f); // slot 7 Val
+        p.param(0)->setValueNotifyingHost(0.9f);   // MixBack
+        std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+        ed->setSize(juce::roundToInt(dtgui::kWidth * scale), juce::roundToInt(dtgui::kHeight * scale));
+        idle();
+        auto* content = ed->getChildComponent(0);
+        const auto edBounds = ed->getLocalBounds();
+        const juce::String sx = juce::String(scale, 1).trimCharactersAtEnd("0").trimCharactersAtEnd(".") + "x";
+
+        for (auto& c : cases)
+        {
+            auto* row = content->getChildComponent(c.row < 0 ? 0 : 3 + c.row);
+            auto* ctrl = dynamic_cast<dtgui::PopupHSlider*>(row->getChildComponent(c.child));
+            const juce::String tag = juce::String(c.name) + " @" + sx;
+            if (!check(tag + ": control is a PopupHSlider", ctrl != nullptr))
+                continue;
+
+            Mouse m { *ctrl };
+            const auto c0 = ctrl->getLocalBounds().getCentre().toFloat();
+            ctrl->mouseEnter(m.ev(c0, {}));
+            idle();
+            const auto before = snap(*ed);
+
+            // --- open (mouse down) --------------------------------------------------------------
+            const int childrenBefore = content->getNumChildComponents();
+            m.down(c0);
+            idle();
+            check(tag + ": popup opens", ctrl->isPopupOpen());
+            auto* host = ctrl->getPopupHost();
+            if (!check(tag + ": popup host is the editor content", host == content))
+            {
+                m.up(c0);
+                continue;
+            }
+            const auto cell = host->getLocalArea(ctrl, ctrl->getLocalBounds());
+            const auto hostArea = host->getLocalBounds();
+            const auto clickX = host->getLocalPoint(ctrl, c0).x;
+            juce::Rectangle<int> barR[2], knobR[2];
+            for (int i = 0; i < 2; ++i)
+            {
+                barR[i] = ctrl->getPopupBarBounds(i);
+                knobR[i] = ctrl->getPopupKnobBounds(i);
+            }
+            const int F = dtgui::PopupHSlider::FINE, C = dtgui::PopupHSlider::COARSE;
+
+            // inside the editor, in the editor's own (scaled) coordinates
+            for (int i = 0; i < 2; ++i)
+            {
+                const auto eb = ed->getLocalArea(host, barR[i]), ek = ed->getLocalArea(host, knobR[i]);
+                check(tag + ": " + (i == F ? "fine" : "coarse") + " bar inside editor " + eb.toString(), edBounds.contains(eb));
+                check(tag + ": " + (i == F ? "fine" : "coarse") + " knob inside editor " + ek.toString(), edBounds.contains(ek));
+                check(tag + ": bar is " + juce::String(209 * scale) + " px wide in the editor",
+                      std::abs((float) eb.getWidth() - 209.0f * scale) <= 1.0f);
+            }
+            // fine above the cell, coarse below it; where one does not fit it goes on the far side of
+            // the other (top row: cell, coarse, fine; bottom row: coarse, fine, cell)
+            const bool fineMoved = cell.getY() - barR[F].getHeight() < hostArea.getY();
+            const bool coarseMoved = cell.getBottom() - 4 + barR[C].getHeight() > hostArea.getBottom();
+            check(tag + ": fine bar " + barR[F].toString() + " cell " + cell.toString(),
+                  fineMoved ? barR[F].getY() == barR[C].getBottom() : barR[F].getBottom() == cell.getY());
+            check(tag + ": coarse bar " + barR[C].toString(),
+                  coarseMoved ? barR[C].getBottom() == barR[F].getY() : barR[C].getY() == cell.getBottom() - 4);
+            for (int i = 0; i < 2; ++i) // the value being edited stays readable (the original overlapped 4 px)
+                check(tag + ": bar clear of the clicked value", !barR[i].intersects(cell.withTrimmedBottom(4)));
+            check(tag + ": bars do not overlap", !barR[F].intersects(barR[C]));
+            // knobs lined up with each other; under the mouse unless a bar had to slide in, and then
+            // that bar is at the edge margin (knob half width, minus the 2 px image border)
+            const int kxF = knobR[F].getCentreX(), kxC = knobR[C].getCentreX();
+            check(tag + ": knobs line up", std::abs(kxF - kxC) <= 1);
+            const bool underMouse = std::abs((float) kxC - clickX) <= 1.0f;
+            const bool atEdge = barR[C].getX() == hostArea.getX() + 9 || barR[C].getRight() == hostArea.getRight() - 9
+                                || barR[F].getX() == hostArea.getX() + 9 || barR[F].getRight() == hostArea.getRight() - 9;
+            check(tag + ": knob under the mouse, or a bar at the edge", underMouse || atEdge);
+            {
+                bool overlaps = false;
+                for (int i = 0; i < 2; ++i)
+                    overlaps |= barR[i].getX() < cell.getRight() && barR[i].getRight() > cell.getX();
+                check(tag + ": a bar overlaps the cell sideways", overlaps);
+            }
+
+            const auto open = snap(*ed);
+            check(tag + ": popup visible in the snapshot", countDiff(before, open) > 0);
+            const auto png = dir.getChildFile("popup-" + juce::String(c.name) + "@" + sx + ".png");
+            writePng(open, png);
+            std::cout << "  " << tag << ": click x=" << clickX << " knob x=" << kxC << (underMouse ? " (under mouse)" : " (slid in)")
+                      << " fine " << barR[F].toString() << " coarse " << barR[C].toString() << " -> " << png.getFileName() << "\n";
+
+            // --- close (mouse up, no drag) and look for leftovers ---------------------------------
+            const auto drawn = ctrl->getPopupDrawnArea();
+            m.up(c0);
+            idle();
+            check(tag + ": popup closed", !ctrl->isPopupOpen());
+            check(tag + ": overlay removed from the editor (" + juce::String(host->getNumChildComponents()) + " children)",
+                  host->getNumChildComponents() == childrenBefore);
+            check(tag + ": close repaints all it drew " + ctrl->getLastCloseRepaint().toString() + " >= " + drawn.toString(),
+                  ctrl->getLastCloseRepaint().contains(drawn));
+            const auto after = snap(*ed);
+            const int diff = countDiff(before, after);
+            check(tag + ": snapshot after close == before open (" + juce::String(diff) + " px differ)", diff == 0);
+
+            // --- drag past both editor edges: bars stay inside, the value still reaches 0 and 1 ----
+            {
+                m.down(c0);
+                m.drag(c0 + juce::Point<float>(0, 5)); // coarse
+                const float edge = (float) ctrl->getWidth() + 600.0f;
+                bool inside = true;
+                float lastDx = 0;
+                for (float dx = 0; dx <= edge; dx += 37.0f)
+                {
+                    lastDx = dx;
+                    m.drag(c0 + juce::Point<float>(dx, 5));
+                    for (int i = 0; i < 2; ++i)
+                        inside &= hostArea.contains(ctrl->getPopupBarBounds(i)) && hostArea.contains(ctrl->getPopupKnobBounds(i));
+                }
+                const float vHi = ctrl->getValue();
+                // back the other way: value comes down at once (no dead zone)
+                m.drag(c0 + juce::Point<float>(lastDx - 20.0f, 5));
+                const float vBack = ctrl->getValue();
+                for (float dx = lastDx - 20.0f; dx >= -edge - 400.0f; dx -= 37.0f)
+                {
+                    m.drag(c0 + juce::Point<float>(dx, 5));
+                    for (int i = 0; i < 2; ++i)
+                        inside &= hostArea.contains(ctrl->getPopupBarBounds(i)) && hostArea.contains(ctrl->getPopupKnobBounds(i));
+                }
+                const float vLo = ctrl->getValue();
+                // up into the fine bar without moving sideways: no jump
+                const auto lastPos = c0 + juce::Point<float>(-edge - 400.0f, 5);
+                const float vBefore = ctrl->getValue();
+                const auto fineCentreY = (float) ctrl->getLocalArea(host, ctrl->getPopupBarBounds(F)).getCentreY();
+                m.drag({ lastPos.x, fineCentreY });
+                const float vSwitch = ctrl->getValue();
+                // fine drag right 30 px: 30 / (204 * 15) of the range
+                m.drag({ lastPos.x + 30.0f, fineCentreY });
+                const float vFine = ctrl->getValue();
+                m.up({ lastPos.x + 30.0f, fineCentreY });
+                idle();
+                const bool snaps = c.row < 0 && c.child == 5; // BlkLen snaps to block sizes
+                check(tag + ": drag keeps the bars inside", inside);
+                check(tag + ": drag right reaches the top (" + juce::String(vHi) + ")", snaps ? vHi >= 0.8f : vHi > 0.999f);
+                check(tag + ": coming back moves at once (" + juce::String(vBack) + ")", snaps || vBack < vHi);
+                check(tag + ": drag left reaches the bottom (" + juce::String(vLo) + ")", snaps ? vLo <= 0.2f : vLo < 0.001f);
+                check(tag + ": switching to fine does not jump (" + juce::String(vBefore) + " -> " + juce::String(vSwitch) + ")",
+                      snaps || std::abs(vSwitch - vBefore) < 1.5f / (204.0f * 15.0f));
+                check(tag + ": fine drag 30 px (" + juce::String(vFine - vSwitch) + ")",
+                      snaps || std::abs((vFine - vSwitch) - 30.0f / (204.0f * 15.0f)) < 1.5f / (204.0f * 15.0f));
+                check(tag + ": closed after the drag", !ctrl->isPopupOpen());
+            }
+        }
+    }
+    std::cout << (fails == 0 ? "POPUP OK" : "POPUP FAILURES") << "\n";
+    return fails == 0 ? 0 : 6;
+}
 } // namespace
 
 int main(int argc, char* argv[])
@@ -510,6 +728,8 @@ int main(int argc, char* argv[])
         return cmdState();
     if (args[0] == "ui")
         return cmdUi();
+    if (args[0] == "popup")
+        return cmdPopup(args);
     if (args[0] == "preset-load")
         return cmdPresetLoad(args);
     if (args[0] == "preset-save")

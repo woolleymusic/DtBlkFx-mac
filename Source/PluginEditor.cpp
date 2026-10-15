@@ -20,6 +20,8 @@ DtBlkFxEditor::DtBlkFxEditor(DtBlkFxProcessor& p) : juce::AudioProcessorEditor(p
 
     addAndMakeVisible(content);
     content.setBounds(0, 0, kWidth, kHeight);
+    // the Fine / Coarse popup sliders are drawn in here, and kept inside it
+    content.getProperties().set(PopupHSlider::popupHostProperty, true);
 
     global = std::make_unique<GlobalCtrlView>(e);
     content.addAndMakeVisible(*global);

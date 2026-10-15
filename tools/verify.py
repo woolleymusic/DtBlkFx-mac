@@ -339,6 +339,27 @@ def check_arches(w):
     return ok
 
 
+def check_editor():
+    """simulated mouse on the editor, and the Fine / Coarse popup sliders at 1x, 1.5x and 2x"""
+    ok = True
+    print("9) editor: simulated drags, clicks and wheel set the right parameters")
+    rc, so = harness("ui")
+    for line in so.splitlines():
+        print("  " + line.strip())
+    ok &= rc == 0 and "UI OK" in so
+    popdir = os.path.join(OUT, "popup")
+    print("10) popup sliders: 7 cells (top row, effect rows 1, 4 and 8, first and last columns) at 1x, 1.5x, 2x:")
+    print("    inside the editor, lined up with the cell, clear of the clicked value, dragging past the")
+    print("    edges keeps them inside and still reaches 0 and 1, no jump switching bars, and after closing")
+    print("    the snapshot is pixel-identical to the one before opening (snapshots in " + os.path.relpath(popdir, ROOT) + ")")
+    rc, so = harness("popup", popdir)
+    for line in so.splitlines():
+        if "FAIL" in line or "@1x" in line or "POPUP" in line:
+            print("  " + line.strip())
+    ok &= rc == 0 and "POPUP OK" in so
+    return ok
+
+
 def main():
     if WRITE_FIXTURES:
         os.makedirs(FIXTURES, exist_ok=True)
@@ -446,6 +467,7 @@ def main():
 
     ok &= check_presets()
     ok &= check_arches(w)
+    ok &= check_editor()
 
     print("ALL OK" if ok else "SOME CHECKS FAILED")
     return 0 if ok else 1

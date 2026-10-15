@@ -1,6 +1,48 @@
 # DtBlkFx JUCE port: restart here
 
-Last updated 2026-10-14 (presets, universal build, GitHub prep).
+Last updated 2026-10-15 (1.2.1: popup slider fix after the first Ableton test).
+
+## 1.2.1 (2026-10-15): popup slider fix
+
+Charlie tested 1.2.0 in Live 12 (Apple Silicon, editor at 1x) and screen recorded it. Findings:
+
+- **Real bug, fixed:** the Fine / Coarse popup sliders were two JUCE desktop windows in screen
+  coordinates. Their geometry was in fact the original's (checked against the recording: the
+  current value sits under the mouse on both bars, Fine above the cell, Coarse below), but the
+  original placed them by the value mapping alone, so a high value clicked near the left edge (or
+  a low one near the right) put a bar outside the plug-in, over Ableton's browser. As separate
+  windows they also moved out of step with each other while dragging. Now both bars are one
+  click-through child component of the editor's content (`SliderPopupOverlay` in
+  `Source/gui/Controls.cpp`; the content carries the `dtguiPopupHost` property). When the original
+  geometry fits it is used unchanged. When it does not, the bars slide in by the smallest amount
+  and the mouse is mapped through a matching offset (`xOffs`), so there is no value jump and
+  dragging past the edge still reaches 0 and 1. Top row: cell, Coarse, Fine. Bottom row: Coarse,
+  Fine, cell. Neither bar covers the value being edited. Closing repaints everything the bars
+  ever covered. Scaling comes from the content transform, so 1x to 3x and retina need nothing
+  extra, and a host title bar cannot offset them.
+- **Not bugs (original behaviour, checked):** the faint grey bars with numbered ticks over the
+  effect rows are each effect's frequency range indicator (see `docs/data/screenshot.png`); with
+  the amp at -inf dB the pink fill is missing, so only the grey bar shows. The small grey square
+  at the top-left of row 1 is the same thing for a 0 to 18.8 Hz range. The solid white areas in
+  the spectrograms are the hovered effect's frequency range drawn inverted
+  (`Spectrogram::drawBm` with `_hilite_x`, InvertRect): silence (black) inverts to white. The
+  white spans match the hovered row's FreqA to FreqB exactly in the recording. The colour map
+  index is clamped as in the original `mapCol`. The bars' see-through look is the PNGs' own
+  alpha (about 82%), as the original's layered windows.
+- Other popups (value menus, effect type menu, spectrogram menu with preset load / save) are
+  JUCE PopupMenus attached to their component; they were fine in the recording and are unchanged.
+- Tests: `DtBlkFxHarness popup <dir>` (verify.py sections 9 and 10, which also run `ui` now).
+  Examples: `docs/popup-row4-amp@1x.png`, `docs/popup-row1-first@1x.png`,
+  `docs/popup-row8-last@1.5x.png`, `docs/popup-top-last@2x.png`; all 21 land in
+  `build/verify/popup`.
+- NOT INSTALLED YET: Live was running when 1.2.1 was built (`pgrep -x Live`), so the installed
+  AU is still 1.2.0 and the VST3 is not installed. With Live closed: move the old
+  `~/Library/Audio/Plug-Ins/Components/DtBlkFx.component` into `_trash/`, copy the new one from
+  `build/DtBlkFx_artefacts/Release/AU/`, do the same for `DtBlkFx.vst3` into
+  `~/Library/Audio/Plug-Ins/VST3`, then run `auval -v aufx DtBk Wool`. `release/DtBlkFx-mac-1.2.1.zip`
+  is built, not published.
+- Still to do: retest in Live (popups at 1x and scaled, and on a non-retina screen if one is
+  handy).
 
 ## State
 
@@ -129,8 +171,8 @@ Results: `docs/verification-2026-10-14.txt` (arm64 only build) and
   always showed the current value. For the current value the text is the same.
 - A safety net was added: if the output ever goes non-finite, that block is silenced and the
   engine is reset. The original would have kept outputting NaN.
-- Editor: text is anti-aliased Arial (the original used GDI). The popup sliders are JUCE desktop
-  windows. Mouse wheel steps are scaled to feel like one notch per step. The window can be scaled
+- Editor: text is anti-aliased Arial (the original used GDI). The popup sliders are drawn inside
+  the editor and kept inside it (see 1.2.1 above). Mouse wheel steps are scaled to feel like one notch per step. The window can be scaled
   from a corner grip, which also draws over the bottom-right corner of the last row.
 
 ## Not done / next

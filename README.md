@@ -113,6 +113,11 @@ and checks:
 - Run to run, the output is identical.
 - `.fxp` and `.fxb` files in all four VST2 forms load, save and round-trip exactly
   (fixtures in `tests/fixtures`, written from the VST 2.4 file layout).
+- The editor: simulated drags, clicks and the wheel set the right parameters. The Fine / Coarse
+  popup sliders, opened on cells in every corner at 1x, 1.5x and 2x, sit inside the editor, line
+  up with the clicked cell, keep clear of the value being edited, stay inside when dragged past
+  the edges, and leave nothing behind when closed (snapshots in `build/verify/popup`; examples
+  in `docs/popup-*.png`).
 - The arm64 and x86_64 slices give the same output to float rounding on most programs. Programs
   that pick pitches or peaks (Repitch, HarmShift, Resample and a few others) can make a different
   choice from a last-bit difference and drift further apart; the same happens on arm64 alone just
@@ -140,8 +145,12 @@ plug-in. Host parameter IDs equal the original VST2 indices, so automation maps 
 - Parameter changes take effect at host block boundaries, as with VST2.
 - If the output ever goes non-finite, that block is silenced and the engine reset (the original
   would keep putting out NaN).
-- Text is anti-aliased Arial, the popup sliders are separate windows, and the window can be
-  scaled.
+- Text is anti-aliased Arial and the window can be scaled.
+- The Fine / Coarse popup sliders stay inside the plug-in window. The original drew them as
+  separate screen windows that could hang outside it. Where they fit, they sit exactly where the
+  original put them. Where they would not (a value near one end clicked near the opposite edge,
+  the top row, the bottom row), they slide back inside or stack on the side with room, and the
+  knob is then offset from the mouse pointer instead of sitting under it.
 
 ## Credits
 

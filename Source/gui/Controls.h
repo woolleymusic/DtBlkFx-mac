@@ -6,6 +6,13 @@ components. They are invisible hot areas; the parent panel draws their text from
   PopupHSlider  (DtPopupHSlider)  left-click pops up a coarse slider below and a 15x fine slider
                                   above, move the mouse down/up to pick one and drag sideways;
                                   right-click opens the value menu; wheel nudges (ctrl = fine)
+
+The popup sliders: the original drew them as topmost layered Windows windows in screen
+coordinates, placed only by the value mapping, so they could hang outside the plug-in window. Here
+they are one child component (SliderPopupOverlay) of the editor's content, kept inside it. When
+the original geometry fits, it is used unchanged. When it does not, the bars are slid back inside
+and the mouse is mapped with a matching offset (xOffs), so the value never jumps and dragging
+still works past the editor edge.
   OwnerToggle   (DtOwnerToggle)   click toggles, release outside cancels
   OwnerMenu     (COptionMenuOwnerDraw) click opens a ticked popup menu
 ***************************************************************************************************/
@@ -20,7 +27,7 @@ components. They are invisible hot areas; the parent panel draws their text from
 
 namespace dtgui
 {
-class SliderPopupWindow;
+class SliderPopupOverlay;
 
 //-------------------------------------------------------------------------------------------------
 class PopupHSlider : public juce::Component
@@ -39,8 +46,17 @@ public:
     PopupHSlider();
     ~PopupHSlider() override;
 
-    // the offline harness sets this so drags can be simulated without opening desktop windows
-    static inline bool headlessPopups = false;
+    // the component the popup sliders are drawn in, and kept inside: the nearest parent with
+    // this property set to true (the editor's content), else the top-level component
+    static constexpr const char* popupHostProperty = "dtguiPopupHost";
+
+    // for tests: whether the popups are showing, and what they cover, in the host's coordinates
+    bool isPopupOpen() const { return overlay != nullptr; }
+    juce::Component* getPopupHost() const { return overlayHost.getComponent(); }
+    juce::Rectangle<int> getPopupBarBounds(int i) const;  // bar image (i = COARSE or FINE)
+    juce::Rectangle<int> getPopupKnobBounds(int i) const; // knob image
+    juce::Rectangle<int> getPopupDrawnArea() const;       // everything drawn since opening
+    juce::Rectangle<int> getLastCloseRepaint() const { return lastCloseRepaint; }
 
     float getValue() const { return value; }
     State getState() const { return state; }
@@ -97,6 +113,10 @@ private:
         void create(int top, int width, int height, float mag);
         void shift(float v, float pixel);
         float drag(int pixel);
+        // move the bar sideways by d; with the mapping too (knob moves) or just the bar
+        void translate(int d, bool withMapping);
+        // the smallest sideways move that keeps [bgRect.x - margin, bgRect.right + margin) in lo..hi
+        int fitDelta(int lo, int hi, int margin) const;
         float getValue(float pixel) const { return rescale.getFrac(pixel); }
         float getPixel(float v) const { return rescale.getRescaled(v); }
     };
@@ -106,6 +126,9 @@ private:
     void openMenu();
     void updatePopups();
     void closePopups();
+    juce::Component* findPopupHost();
+    juce::AffineTransform toHost() const;
+    void fitInside(int i, bool withMapping);
 
     float value = 0;
     State state = INACTIVE;
@@ -120,7 +143,11 @@ private:
     };
     std::vector<Entry> menu;
     Internal slider[2];
-    std::unique_ptr<SliderPopupWindow> popup[2];
+    std::unique_ptr<SliderPopupOverlay> overlay;
+    juce::Component::SafePointer<juce::Component> overlayHost;
+    juce::Rectangle<int> area;     // host bounds in this control's coordinates (clamp area)
+    int xOffs = 0;                 // virtual mouse x = e.x + xOffs (non-zero only when clamped)
+    juce::Rectangle<int> lastCloseRepaint;
     bool editing = false;
     bool intercepted = false;
     juce::Component::SafePointer<PopupHSlider> safeThis { this };
