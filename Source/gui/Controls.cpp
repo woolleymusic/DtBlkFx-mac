@@ -296,11 +296,18 @@ void PopupHSlider::sliderMouseClick(const juce::MouseEvent& e)
             r->setY(juce::jlimit(area.getY() + B, juce::jmax(area.getY() + B, area.getBottom() - B - r->getHeight()), r->getY()));
     }
 
+    placeBars(e.x);
+    updatePopups();
+}
+
+void PopupHSlider::placeBars(int mouseX)
+{
+    const auto& skin = Skin::get();
     // the original put the current value under the mouse on both bars. Keep that when it fits,
     // otherwise slide both bars by the smallest amount that keeps them inside, and map the mouse
     // with the same offset
     for (int i = 0; i < 2; ++i)
-        slider[i].shift(value, (float) e.x);
+        slider[i].shift(value, (float) mouseX);
     int dLo = std::numeric_limits<int>::min(), dHi = std::numeric_limits<int>::max();
     for (int i = 0; i < 2; ++i)
     {
@@ -310,13 +317,12 @@ void PopupHSlider::sliderMouseClick(const juce::MouseEvent& e)
     }
     xOffs = dLo <= dHi ? juce::jlimit(dLo, dHi, 0) : 0;
     for (int i = 0; i < 2; ++i)
-        slider[i].shift(value, (float) (e.x + xOffs));
+        slider[i].shift(value, (float) (mouseX + xOffs));
     if (dLo > dHi) // editor narrower than both bars allow (never at the normal size)
     {
         fitInside(COARSE, true);
         fitInside(FINE, false);
     }
-    updatePopups();
 }
 
 void PopupHSlider::mouseDrag(const juce::MouseEvent& e)
@@ -330,20 +336,21 @@ void PopupHSlider::mouseDrag(const juce::MouseEvent& e)
 
     if (state == PRE_DRAG)
     {
-        const int yDelta = e.y - clickPos.y;
-        if (yDelta < 0)
+        // Pick a bar on the first real movement, in any direction: clearly up = Fine, anything
+        // else (sideways or down) = Coarse. The original only looked at vertical movement
+        // (up 1 px = Fine, down 2 px = Coarse), so a sideways drag did nothing until the hand
+        // wobbled, and then the value leapt by the whole sideways distance and the bars set off
+        // after the pointer (seen in Live, 1.2.0). Then the bars are placed again at the pointer,
+        // so picking a bar never changes the value.
+        const int dx = e.x - clickPos.x, dy = e.y - clickPos.y;
+        const int dist = juce::jmax(std::abs(dx), std::abs(dy));
+        if (dist >= kPickDistance)
         {
             editing = true;
             if (onGestureBegin)
                 onGestureBegin();
-            setState(FINE);
-        }
-        else if (yDelta > 1)
-        {
-            editing = true;
-            if (onGestureBegin)
-                onGestureBegin();
-            setState(COARSE);
+            setState(dy < 0 && -dy >= std::abs(dx) ? FINE : COARSE);
+            placeBars(e.x);
         }
         updatePopups();
     }
@@ -417,6 +424,11 @@ void PopupHSlider::mouseUp(const juce::MouseEvent& e)
 void PopupHSlider::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
     // VSTGUI gave one unit per wheel notch; JUCE reports roughly 0.1..0.25 per notch on macOS
+    // Momentum (inertial) events keep arriving for a second or more after the fingers leave a
+    // trackpad or Magic Mouse, which made the value keep going on its own. A wheel turn during a
+    // popup drag is ignored too (the drag owns the value then).
+    if (w.isInertial || state >= PRE_DRAG || state == MENU_OPEN)
+        return;
     const float distance = juce::jlimit(-4.0f, 4.0f, (w.isReversed ? -w.deltaY : w.deltaY) * 4.0f);
     if (distance == 0.0f)
         return;

@@ -25,6 +25,7 @@ cmake --build "$BUILD" --target DtBlkFx_AU DtBlkFx_VST3
 AU="$ART/AU/DtBlkFx.component"
 VST3="$ART/VST3/DtBlkFx.vst3"
 for b in "$AU" "$VST3"; do
+    xattr -cr "$b" # iCloud / File Provider folders add FinderInfo, which codesign refuses
     codesign -s - --deep --force "$b"
     codesign -v --strict --deep "$b"
     echo "$(basename "$b"): $(lipo -archs "$b/Contents/MacOS/DtBlkFx"), signature ok"
@@ -36,13 +37,14 @@ STAGE="release/$NAME"
 if [ -e "$STAGE" ]; then mv "$STAGE" "_trash/$NAME-staging-$(date +%Y%m%d-%H%M%S)"; fi
 if [ -e "release/$NAME.zip" ]; then mv "release/$NAME.zip" "_trash/$NAME-$(date +%Y%m%d-%H%M%S).zip"; fi
 mkdir -p "$STAGE"
-ditto "$AU" "$STAGE/DtBlkFx.component"
-ditto "$VST3" "$STAGE/DtBlkFx.vst3"
-cp README.md LICENSE "$STAGE/"
+ditto --norsrc --noextattr --noqtn "$AU" "$STAGE/DtBlkFx.component"
+ditto --norsrc --noextattr --noqtn "$VST3" "$STAGE/DtBlkFx.vst3"
+cp README.md CHANGELOG.md LICENSE "$STAGE/"
 cp docs/FFTW_COPYRIGHT "$STAGE/FFTW_COPYRIGHT.txt"
 
 # ditto keeps the bundle structure and signatures intact (plain zip can break symlinks)
-ditto -c -k --keepParent "$STAGE" "release/$NAME.zip"
+xattr -cr "$STAGE"
+ditto -c -k --norsrc --noextattr --noqtn --keepParent "$STAGE" "release/$NAME.zip"
 mv "$STAGE" "_trash/$NAME-staging-$(date +%Y%m%d-%H%M%S)"
 
 echo "release/$NAME.zip ($(du -h "release/$NAME.zip" | cut -f1))"

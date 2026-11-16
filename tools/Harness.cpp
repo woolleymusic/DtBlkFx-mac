@@ -15,6 +15,10 @@ DtBlkFxHarness: offline test bench for the DtBlkFx JUCE port (no DAW needed).
       open the Fine / Coarse popup sliders on cells in every corner of the editor at 1x, 1.5x and
       2x, check they sit inside the editor and line up with the cell, drag them past the edges,
       check nothing is left behind after closing, and write snapshots to <dir>/popup-*.png
+  DtBlkFxHarness drag
+      drag stability: a sideways drag picks Coarse at once and the value tracks the pointer (no
+      leap when a bar is picked), every slider at 1x / 1.5x / 2x has no drift and no acceleration,
+      and momentum wheel events are ignored
   DtBlkFxHarness preset-load <file.fxp|file.fxb> [--drop]
       load a VST2 preset or bank into a fresh plug-in (with --drop: by dropping it on the editor)
       and print the result, current program, every parameter and every program name
@@ -704,6 +708,185 @@ int cmdPopup(const juce::StringArray& args)
     std::cout << (fails == 0 ? "POPUP OK" : "POPUP FAILURES") << "\n";
     return fails == 0 ? 0 : 6;
 }
+
+// --- drag stability -------------------------------------------------------------------------------
+// Regression test for "the slider runs away when you drag it" (seen in Live with 1.2.0, screen
+// recording 2026-11-16): a sideways drag used to do nothing until the hand wobbled vertically, then
+// the value leapt by the whole sideways distance and the bars set off after the pointer.
+int cmdDrag()
+{
+    int fails = 0;
+    auto check = [&](const juce::String& what, bool ok) {
+        std::cout << (ok ? "  ok   " : "  FAIL ") << what << "\n";
+        if (!ok)
+            ++fails;
+        return ok;
+    };
+    using PS = dtgui::PopupHSlider;
+    constexpr float coarseRate = 1.0f / 204.0f, fineRate = 1.0f / (204.0f * 15.0f);
+
+    // 1. replay of the recording: slot 1 Amp at -inf, sideways drag with no vertical movement, then
+    //    a 1 px wobble up
+    {
+        DtBlkFxProcessor p;
+        p.setCurrentProgram(1);
+        p.param(6)->setValueNotifyingHost(0.0f);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+        auto* content = ed->getChildComponent(0);
+        auto* amp = dynamic_cast<PS*>(content->getChildComponent(3)->getChildComponent(2));
+        Mouse m { *amp };
+        const auto c0 = amp->getLocalBounds().getCentre().toFloat();
+        m.down(c0);
+        m.drag(c0 + juce::Point<float>(1, 0));
+        check("1 px sideways: no bar picked yet", amp->getState() == PS::PRE_DRAG);
+        m.drag(c0 + juce::Point<float>(3, 0));
+        check("3 px sideways picks Coarse", amp->getState() == PS::COARSE);
+        check("picking a bar does not change the value (" + juce::String(amp->getValue()) + ")", juce::exactlyEqual(amp->getValue(), 0.0f));
+        const auto host = amp->getPopupHost()->getLocalBounds();
+        bool inside = true, under = true;
+        for (int x = 4; x <= 60; ++x)
+        {
+            m.drag(c0 + juce::Point<float>((float) x, 0));
+            const float expect = (float) (x - 3) * coarseRate;
+            if (std::abs(amp->getValue() - expect) > 0.5f * coarseRate)
+                under = false;
+            for (int i = 0; i < 2; ++i)
+                inside &= host.contains(amp->getPopupBarBounds(i));
+            const float px = amp->getPopupHost()->getLocalPoint(amp, c0 + juce::Point<float>((float) x, 0)).x;
+            under &= std::abs((float) amp->getPopupKnobBounds(PS::COARSE).getCentreX() - px) <= 1.5f;
+        }
+        check("sideways drag: value tracks the pointer 1 px = 1/204 and the knob stays under it", under);
+        check("bars stay inside the editor", inside);
+        const float v = amp->getValue();
+        m.drag(c0 + juce::Point<float>(60, -1)); // the wobble that used to pick Fine
+        check("1 px wobble up keeps Coarse and the value (" + juce::String(v) + " -> " + juce::String(amp->getValue()) + ")",
+              amp->getState() == PS::COARSE && juce::exactlyEqual(amp->getValue(), v));
+        m.drag(c0 + juce::Point<float>(60, -1));
+        check("same position again: no change", juce::exactlyEqual(amp->getValue(), v));
+        m.up(c0 + juce::Point<float>(60, -1));
+        check("value sent to the host", std::abs(p.param(6)->get() - v) < 1e-6f);
+    }
+
+    // 2. picking each bar from each direction never jumps, at every scale
+    {
+        struct Dir { const char* name; float dx, dy; PS::State want; };
+        const Dir dirs[] = { { "right", 40, 0, PS::COARSE }, { "left", -40, 0, PS::COARSE }, { "down", 0, 40, PS::COARSE },
+                             { "up", 0, -40, PS::FINE },    { "up-left", -10, -40, PS::FINE }, { "right-up", 40, -10, PS::COARSE } };
+        for (float scale : { 1.0f, 1.5f, 2.0f })
+            for (auto& d : dirs)
+            {
+                DtBlkFxProcessor p;
+                p.setCurrentProgram(1);
+                std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+                ed->setSize(juce::roundToInt(dtgui::kWidth * scale), juce::roundToInt(dtgui::kHeight * scale));
+                auto* fa = dynamic_cast<PS*>(ed->getChildComponent(0)->getChildComponent(4)->getChildComponent(0));
+                fa->setValue(0.5f);
+                Mouse m { *fa };
+                const auto c0 = fa->getLocalBounds().getCentre().toFloat();
+                m.down(c0);
+                // one big jump of the pointer between two events (a fast hand, or a busy host)
+                m.drag(c0 + juce::Point<float>(d.dx, d.dy));
+                const bool ok = fa->getState() == d.want && juce::exactlyEqual(fa->getValue(), 0.5f);
+                m.up(c0 + juce::Point<float>(d.dx, d.dy));
+                check(juce::String("fast first move ") + d.name + " @" + juce::String(scale) + ": picks "
+                          + (d.want == PS::FINE ? "Fine" : "Coarse") + ", value stays 0.5 (" + juce::String(fa->getValue()) + ")",
+                      ok);
+            }
+    }
+
+    // 3. every slider, both bars, three scales, five start values: back and forth in 1 px steps.
+    //    No change without movement, never faster than the bar's rate, knob never faster than the pointer
+    {
+        int runs = 0, bad = 0;
+        for (float scale : { 1.0f, 1.5f, 2.0f })
+            for (float sv : { 0.02f, 0.3f, 0.5f, 0.7f, 0.98f })
+                for (int mode = 0; mode < 2; ++mode)
+                {
+                    DtBlkFxProcessor p;
+                    p.setCurrentProgram(1);
+                    std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+                    ed->setSize(juce::roundToInt(dtgui::kWidth * scale), juce::roundToInt(dtgui::kHeight * scale));
+                    auto* content = ed->getChildComponent(0);
+                    for (int r = -1; r < 8; ++r)
+                    {
+                        auto* row = content->getChildComponent(r < 0 ? 0 : 3 + r);
+                        for (int ci = 0; ci < row->getNumChildComponents(); ++ci)
+                        {
+                            auto* ctrl = dynamic_cast<PS*>(row->getChildComponent(ci));
+                            if (ctrl == nullptr || (r < 0 && ci == 5)) // BlkLen snaps to block sizes
+                                continue;
+                            ++runs;
+                            ctrl->setValue(sv);
+                            Mouse m { *ctrl };
+                            const auto c0 = ctrl->getLocalBounds().getCentre().toFloat();
+                            const float dy = mode == 0 ? 5.0f : -5.0f;
+                            const int bar = mode == 0 ? PS::COARSE : PS::FINE;
+                            const float rate = mode == 0 ? coarseRate : fineRate;
+                            m.down(c0);
+                            m.drag(c0 + juce::Point<float>(0, dy));
+                            float maxStep = 0, maxStat = 0, maxKnob = 0, px = 0, prevV = ctrl->getValue();
+                            const bool pickOk = juce::exactlyEqual(ctrl->getValue(), sv) && ctrl->getState() == bar;
+                            int prevK = ctrl->getPopupKnobBounds(bar).getCentreX();
+                            auto step = [&](float x) {
+                                m.drag(c0 + juce::Point<float>(x, dy));
+                                const float v = ctrl->getValue();
+                                m.drag(c0 + juce::Point<float>(x, dy));
+                                maxStat = std::max(maxStat, std::abs(ctrl->getValue() - v));
+                                maxStep = std::max(maxStep, std::abs(v - prevV) / std::abs(x - px));
+                                const int k = ctrl->getPopupKnobBounds(bar).getCentreX();
+                                maxKnob = std::max(maxKnob, std::abs((float) (k - prevK)) / (std::abs(x - px) * scale));
+                                prevV = v;
+                                prevK = k;
+                                px = x;
+                            };
+                            for (float x = 1; x <= 80; x += 1) step(x);
+                            for (float x = 79; x >= -80; x -= 1) step(x);
+                            for (float x = -79; x <= 0; x += 1) step(x);
+                            m.up(c0 + juce::Point<float>(0, dy));
+                            if (!pickOk || maxStat > 0 || maxStep > rate * 1.01f || maxKnob > 1.01f)
+                            {
+                                ++bad;
+                                std::cout << "  FAIL scale " << scale << " start " << sv << (mode ? " fine" : " coarse") << " row " << r
+                                          << " ctrl " << ci << ": pick " << pickOk << " step/rate " << maxStep / rate << " stationary "
+                                          << maxStat << " knob px/px " << maxKnob << "\n";
+                            }
+                        }
+                    }
+                }
+        check(juce::String(runs) + " drags (all sliders, both bars, 1x/1.5x/2x, 5 start values): no drift, no acceleration", bad == 0);
+    }
+
+    // 4. wheel: momentum events and wheel turns during a drag are ignored
+    {
+        DtBlkFxProcessor p;
+        p.setCurrentProgram(1);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+        auto* val = dynamic_cast<PS*>(ed->getChildComponent(0)->getChildComponent(3)->getChildComponent(4));
+        val->setValue(0.5f);
+        Mouse m { *val };
+        const auto c0 = val->getLocalBounds().getCentre().toFloat();
+        juce::MouseWheelDetails w {};
+        w.deltaY = 0.05f;
+        w.isSmooth = true;
+        w.isInertial = true;
+        val->mouseWheelMove(m.ev(c0, {}), w);
+        check("momentum wheel event ignored", juce::exactlyEqual(val->getValue(), 0.5f));
+        w.isInertial = false;
+        val->mouseWheelMove(m.ev(c0, {}), w);
+        check("live wheel event moves the value", val->getValue() > 0.5f);
+        const float v = val->getValue();
+        m.down(c0);
+        m.drag(c0 + juce::Point<float>(5, 0));
+        const float vd = val->getValue();
+        val->mouseWheelMove(m.ev(c0 + juce::Point<float>(5, 0), juce::ModifierKeys::leftButtonModifier), w);
+        check("wheel during a drag ignored", juce::exactlyEqual(val->getValue(), vd));
+        m.up(c0 + juce::Point<float>(5, 0));
+        (void) v;
+    }
+
+    std::cout << (fails == 0 ? "DRAG OK" : "DRAG FAILURES") << "\n";
+    return fails == 0 ? 0 : 7;
+}
 } // namespace
 
 int main(int argc, char* argv[])
@@ -728,6 +911,8 @@ int main(int argc, char* argv[])
         return cmdState();
     if (args[0] == "ui")
         return cmdUi();
+    if (args[0] == "drag")
+        return cmdDrag();
     if (args[0] == "popup")
         return cmdPopup(args);
     if (args[0] == "preset-load")

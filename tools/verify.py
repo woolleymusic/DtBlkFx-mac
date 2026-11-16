@@ -357,6 +357,14 @@ def check_editor():
         if "FAIL" in line or "@1x" in line or "POPUP" in line:
             print("  " + line.strip())
     ok &= rc == 0 and "POPUP OK" in so
+    print("11) drag stability (1.2.2 'runs away' fix): a sideways drag picks Coarse at once and the value")
+    print("    tracks the pointer, picking a bar never changes the value, every slider at 1x / 1.5x / 2x")
+    print("    shows no drift and no acceleration, momentum wheel events are ignored")
+    rc, so = harness("drag")
+    for line in so.splitlines():
+        if "FAIL" in line or "drags" in line or "DRAG" in line:
+            print("  " + line.strip())
+    ok &= rc == 0 and "DRAG OK" in so
     return ok
 
 

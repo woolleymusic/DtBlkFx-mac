@@ -4,7 +4,8 @@ DtBlkFx for JUCE: the original owner-drawn VSTGUI controls (VstGuiSupport.*), re
 components. They are invisible hot areas; the parent panel draws their text from the skin.
 
   PopupHSlider  (DtPopupHSlider)  left-click pops up a coarse slider below and a 15x fine slider
-                                  above, move the mouse down/up to pick one and drag sideways;
+                                  above; move up to pick Fine, sideways or down to pick Coarse,
+                                  then drag sideways (moving onto the other bar switches to it);
                                   right-click opens the value menu; wheel nudges (ctrl = fine)
 
 The popup sliders: the original drew them as topmost layered Windows windows in screen
@@ -123,6 +124,9 @@ private:
 
     void setState(State s);
     void sliderMouseClick(const juce::MouseEvent&);
+    // put the current value under mouse x (control coordinates) on both bars, sliding them in
+    // (with xOffs) where they would leave the editor
+    void placeBars(int mouseX);
     void openMenu();
     void updatePopups();
     void closePopups();
@@ -134,6 +138,7 @@ private:
     State state = INACTIVE;
     bool snapToMenu = false;
     float fineScaleFrac = 1.0f / 15.0f;
+    static constexpr int kPickDistance = 3; // px moved after the click before a bar is picked
     float wheelInc = 0.1f;
     juce::Point<int> clickPos;
     struct Entry

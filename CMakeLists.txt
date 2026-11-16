@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.22)
 # gets the SDK's own version as its minimum macOS
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
-project(DtBlkFx VERSION 1.2.1 LANGUAGES C CXX)
+project(DtBlkFx VERSION 1.2.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -126,9 +126,12 @@ target_sources(DtBlkFx PRIVATE ${DTBLKFX_SOURCES})
 
 # Ad-hoc sign each finished bundle (after JUCE's own post-build steps, e.g. the VST3 moduleinfo),
 # so "codesign -v" passes and Apple Silicon will load the unsigned-by-a-developer build.
+# Extended attributes are cleared first: in a folder synced by iCloud / File Provider the bundle
+# picks up com.apple.FinderInfo, and codesign refuses it ("detritus not allowed").
 if(APPLE)
     foreach(fmt ${DTBLKFX_FORMATS})
         add_custom_command(TARGET DtBlkFx_${fmt} POST_BUILD
+            COMMAND xattr -cr "$<TARGET_BUNDLE_DIR:DtBlkFx_${fmt}>"
             COMMAND codesign -s - --deep --force "$<TARGET_BUNDLE_DIR:DtBlkFx_${fmt}>"
             COMMENT "Ad-hoc signing DtBlkFx ${fmt}"
             VERBATIM)

@@ -1,6 +1,53 @@
 # DtBlkFx JUCE port: restart here
 
-Last updated 2026-10-15 (1.2.1: popup slider fix after the first Ableton test).
+Last updated 2026-11-16 (1.2.2: "slider runs away when you drag it" fix).
+
+## 1.2.2 (2026-11-16): drag runaway fix
+
+Charlie watched himself in Live 12 (1.2.0 installed, screen recording
+`~/Movies/2026-11-16 14-47-49.mov`, about 104 s to 112 s, slot 1 Amp). Frame by frame at 15 fps:
+click on Amp (-inf dB), the pointer moves about 140 px sideways to the plug-in's right edge and
+the value does not move at all; then, with the pointer already outside the window, the value
+leaps to about -30 dB and the Fine bar (Coarse bar riding along with it) follows the pointer
+across Live's arrangement, more than 1000 px outside the plug-in.
+
+- **Root cause:** `PopupHSlider::mouseDrag` PRE_DRAG branch (`Source/gui/Controls.cpp`, was lines
+  331 to 349 in 1.2.1) picked a bar from vertical movement only: up 1 px = Fine, down 2 px =
+  Coarse, sideways = nothing. The bars' mapping was anchored at the mouse-down x
+  (`sliderMouseClick`, `shift(value, e.x)`), so the first vertical wobble after a sideways drag
+  applied the whole sideways distance at once. Usually the wobble was 1 px up, so it landed in
+  Fine, which moves 15x slower and whose bar is dragged along whenever the pointer passes its
+  end (`Internal::drag`). The original had the same logic; it is just how a sideways drag goes
+  wrong. 1.2.1 (bars inside the editor) did not touch this: the harness reproduces the leap on
+  the 1.2.1 code.
+- **Fix:** the first movement of 3 px in any direction picks the bar (clearly up = Fine,
+  otherwise Coarse) and the bars are placed again at the pointer (`placeBars`, split out of
+  `sliderMouseClick`), so picking a bar never changes the value and a sideways drag moves it from
+  the first pixel at 1/204 per px with the knob under the pointer. Also: momentum (inertial)
+  wheel events are ignored (trackpad / Magic Mouse kept the value moving after you let go), and
+  the wheel is ignored during a popup drag.
+- **Checked and fine (no change):** the drag math itself (no drift without movement, never
+  faster than the bar's rate, knob never faster than the pointer, on all 35 sliders, both bars,
+  1x / 1.5x / 2x, five start values); shift-drag both frequencies (absolute mapping from the
+  click); the 30 Hz parameter poll (only feeds the other bar's alignment, not the active mapping);
+  the corner resizer (JUCE measures from the screen position of the click).
+- **Test:** `DtBlkFxHarness drag` (verify.py section 11): replay of the recording, fast first
+  moves in six directions at three scales, 1050 back-and-forth drags, wheel. It fails on the 1.2.1
+  code and passes now.
+- **Manual check in Live (not done yet):** click a value and drag straight sideways: the number
+  changes from the first pixel and the Coarse knob stays under the pointer. Click and move up
+  first: Fine. Two-finger flick on the trackpad over a value and lift: it stops when your fingers
+  stop.
+- **Installed** 2026-11-16 with Live closed: AU and (first time) VST3 from
+  `build/DtBlkFx_artefacts/Release`, old 1.2.0 AU moved to `_trash/installed-1.2.0-*`. Installed
+  AU Mach-O UUIDs match the build. `auval -v aufx DtBk Wool`: AU VALIDATION SUCCEEDED, version
+  1.2.2.
+- **Build dir:** the old `build/` had the pre-move path in its CMakeCache; it is in
+  `_trash/build-stale-path-*` and `build/` was configured fresh. The Desktop is now synced by
+  File Provider, which puts com.apple.FinderInfo on new bundles and makes codesign fail; the
+  post-build step and `tools/package.sh` now run `xattr -cr` first, and the zip is made without
+  AppleDouble `._` files.
+- `release/DtBlkFx-mac-1.2.2.zip` is built, not published. Not pushed.
 
 ## 1.2.1 (2026-10-15): popup slider fix
 
@@ -35,12 +82,7 @@ Charlie tested 1.2.0 in Live 12 (Apple Silicon, editor at 1x) and screen recorde
   Examples: `docs/popup-row4-amp@1x.png`, `docs/popup-row1-first@1x.png`,
   `docs/popup-row8-last@1.5x.png`, `docs/popup-top-last@2x.png`; all 21 land in
   `build/verify/popup`.
-- NOT INSTALLED YET: Live was running when 1.2.1 was built (`pgrep -x Live`), so the installed
-  AU is still 1.2.0 and the VST3 is not installed. With Live closed: move the old
-  `~/Library/Audio/Plug-Ins/Components/DtBlkFx.component` into `_trash/`, copy the new one from
-  `build/DtBlkFx_artefacts/Release/AU/`, do the same for `DtBlkFx.vst3` into
-  `~/Library/Audio/Plug-Ins/VST3`, then run `auval -v aufx DtBk Wool`. `release/DtBlkFx-mac-1.2.1.zip`
-  is built, not published.
+- 1.2.1 was never installed or published on its own; it is part of 1.2.2 (see above).
 - Still to do: retest in Live (popups at 1x and scaled, and on a non-retina screen if one is
   handy).
 
@@ -97,16 +139,17 @@ mv ~/Library/Audio/Plug-Ins/Components/DtBlkFx.component _trash/
 cp -R build/DtBlkFx_artefacts/Release/AU/DtBlkFx.component ~/Library/Audio/Plug-Ins/Components/
 ```
 
-The universal, signed AU is installed there now (2026-10-14). Old copies are in
-`_trash/installed-au/`. The VST3 is not installed.
+The universal, signed 1.2.2 AU and VST3 are installed there now (2026-11-16). Old copies are in
+`_trash/installed-au/` and `_trash/installed-1.2.0-*`.
 
 ## Test
 
 ```
-python3 -I tools/verify.py                              # ALL OK expected (sections 1 to 8)
+python3 -I tools/verify.py                              # ALL OK expected (sections 1 to 11)
 DTBLKFX_HARNESS_ARCH=x86_64 python3 -I tools/verify.py  # same, on the x86_64 slice via Rosetta
 build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness list        # params, effects, programs
 build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness ui          # simulated mouse on the editor
+build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness drag        # drag stability (1.2.2 runaway fix)
 build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness state       # save / restore round trip
 build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness preset-load tests/fixtures/fixture_chunk.fxb [--drop]
 build/DtBlkFxHarness_artefacts/Release/DtBlkFxHarness preset-save out.fxp --program 5

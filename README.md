@@ -52,11 +52,13 @@ both sides.
 
 The editor works like the original:
 
-- Left-click and hold a value, then move the mouse **down** for the coarse slider or **up** for
-  the fine (15x) slider, and drag sideways.
+- Left-click and hold a value and drag sideways: that is the coarse slider. Move **up** first
+  for the fine (15x) slider. While dragging, moving onto the other bar switches to it without
+  changing the value.
 - Right-click (or ctrl-click) a value for its menu of presets.
 - Shift-drag or right-drag a frequency to move both frequencies of that slot together.
-- Mouse wheel nudges a value (ctrl or cmd for fine).
+- Mouse wheel or trackpad scroll nudges a value (ctrl or cmd for fine). Momentum scrolling after
+  you let go of the trackpad is ignored.
 - Click a spectrogram to choose what it shows (input or output, left, right or both, or pause).
 - The window can be scaled from the bottom-right corner; at 100% it is the original 410 x 409.
 
@@ -118,6 +120,9 @@ and checks:
   up with the clicked cell, keep clear of the value being edited, stay inside when dragged past
   the edges, and leave nothing behind when closed (snapshots in `build/verify/popup`; examples
   in `docs/popup-*.png`).
+- Drags are stable: a sideways drag starts moving the value at once and the value follows the
+  pointer at a fixed rate, picking a bar never changes the value, and every slider at 1x, 1.5x
+  and 2x shows no drift without movement and no acceleration (`DtBlkFxHarness drag`).
 - The arm64 and x86_64 slices give the same output to float rounding on most programs. Programs
   that pick pitches or peaks (Repitch, HarmShift, Resample and a few others) can make a different
   choice from a last-bit difference and drift further apart; the same happens on arm64 alone just
@@ -151,6 +156,9 @@ plug-in. Host parameter IDs equal the original VST2 indices, so automation maps 
   original put them. Where they would not (a value near one end clicked near the opposite edge,
   the top row, the bottom row), they slide back inside or stack on the side with room, and the
   knob is then offset from the mouse pointer instead of sitting under it.
+- The popup sliders pick a bar on the first movement in any direction (up = Fine, sideways or
+  down = Coarse). The original only looked at vertical movement, so a sideways drag did nothing
+  until the hand wobbled, and then the value leapt by the whole sideways distance.
 
 ## Credits
 
